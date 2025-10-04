@@ -5,10 +5,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from io import BytesIO
 
-# Charts
-import matplotlib.pyplot as plt
-
-st.set_page_config(page_title="Extractor Outlook → Contactos", layout="wide")
+st.set_page_config(page_title="Extractor Outlook → Contactos (sin matplotlib)", layout="wide")
 st.title("📤 Outlook → 🧰 Contactos Limpios (Prospectos)")
 
 st.markdown("""
@@ -102,7 +99,7 @@ def harvest_emails_from_row(row: pd.Series):
                 emails.add(em); cols.add(col)
     return emails, cols
 
-def to_csv_download(df: pd.DataFrame, name="data.csv"):
+def to_csv_download(df: pd.DataFrame):
     buf = BytesIO()
     df.to_csv(buf, index=False, encoding="utf-8")
     return buf.getvalue()
@@ -165,11 +162,9 @@ with st.spinner("Procesando…"):
                 }
                 cols_by_email[em] |= set(cols)
             else:
-                # Update most recent date & subject
                 if sent_dt and (prev["UltimoEnvio"] is None or sent_dt > prev["UltimoEnvio"]):
                     prev["UltimoEnvio"] = sent_dt
                     prev["AsuntoUltimo"] = subject
-                # Fill missing name/lastname if empty
                 if not prev["Nombre"] and nombre:
                     prev["Nombre"] = nombre
                 if not prev["Apellido"] and apellido:
@@ -229,34 +224,27 @@ st.dataframe(df_contacts.head(50), use_container_width=True)
 st.subheader("Empresas (muestra)")
 st.dataframe(df_companies.head(50), use_container_width=True)
 
-# Charts (matplotlib, single-plot each, no explicit colors)
+# Charts using Streamlit native charts
 st.subheader("Distribución Estado Cliente")
-counts = df_contacts["EstadoCliente"].value_counts()
-fig1, ax1 = plt.subplots()
-counts.plot(kind="bar", ax=ax1)
-ax1.set_xlabel("Estado")
-ax1.set_ylabel("Cantidad")
-st.pyplot(fig1)
+if not df_contacts.empty:
+    st.bar_chart(df_contacts["EstadoCliente"].value_counts())
 
 st.subheader("Top 10 Dominios (por contactos)")
-top_domains = df_contacts["Dominio"].value_counts().head(10)
-fig2, ax2 = plt.subplots()
-top_domains.plot(kind="bar", ax=ax2)
-ax2.set_xlabel("Dominio")
-ax2.set_ylabel("Contactos")
-st.pyplot(fig2)
+if not df_contacts.empty:
+    top_domains = df_contacts["Dominio"].value_counts().head(10)
+    st.bar_chart(top_domains)
 
 # Downloads
 st.markdown("### Descargas")
 st.download_button(
     "⬇️ Descargar contactos_limpios.csv",
-    data=to_csv_download(df_contacts, "contactos_limpios.csv"),
+    data=to_csv_download(df_contacts),
     file_name="contactos_limpios.csv",
     mime="text/csv"
 )
 st.download_button(
     "⬇️ Descargar empresas_resumen.csv",
-    data=to_csv_download(df_companies, "empresas_resumen.csv"),
+    data=to_csv_download(df_companies),
     file_name="empresas_resumen.csv",
     mime="text/csv"
 )
