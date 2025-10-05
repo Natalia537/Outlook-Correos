@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from io import BytesIO
 
-st.set_page_config(page_title="Outlook → Contactos (Excel multi-hoja)", layout="wide")
-st.title("📤 Outlook → 🧰 Contactos Limpios (Excel multi-hoja)")
+st.set_page_config(page_title="Outlook → Contactos (con filtros de exclusión)", layout="wide")
+st.title("📤 Outlook → 🧰 Contactos Limpios (con filtros de exclusión)")
 
 st.markdown("""
 Subí un **CSV** exportado de Outlook (p. ej., *Elementos enviados*). La app:
@@ -14,8 +14,8 @@ Subí un **CSV** exportado de Outlook (p. ej., *Elementos enviados*). La app:
 - Deduplica por email y conserva la **fecha más reciente** (si hay fecha).
 - Infere **Nombre/Apellido** y **Empresa** desde el dominio.
 - Clasifica **Cliente reciente** (últimos *N* meses) vs **Seguimiento**.
-- **Excluye** correos no deseados según reglas (ventas@, info@, etc.).
-- Descarga **un solo Excel** con 3 hojas: **Contactos**, **Empresas**, **Excluidos**.
+- **Excluye** correos no deseados según **reglas configurables** (ventas@, info@, etc.).
+- Descargas: **contactos_limpios**, **empresas_resumen** y **excluidos**.
 """)
 
 # ===== Utilidades =====
@@ -103,34 +103,10 @@ def harvest_emails_from_row(row: pd.Series):
                 emails.add(em); cols.add(col)
     return emails, cols
 
-def make_excel_bytes(df_contacts: pd.DataFrame, df_companies: pd.DataFrame, df_excluded: pd.DataFrame) -> bytes:
-    """
-    Crea un Excel en memoria con 3 hojas:
-    - Contactos
-    - Empresas
-    - Excluidos
-    """
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        # Orden de columnas amigable si existen
-        if not df_contacts.empty:
-            cols = ["Email","Nombre","Apellido","Dominio","Empresa","UltimoEnvio","EstadoCliente","AsuntoUltimo","ColumnasOrigen"]
-            cols = [c for c in cols if c in df_contacts.columns] + [c for c in df_contacts.columns if c not in cols]
-            df_contacts[cols].to_excel(writer, sheet_name="Contactos", index=False)
-        else:
-            pd.DataFrame(columns=["Email","Nombre","Apellido","Dominio","Empresa","UltimoEnvio","EstadoCliente","AsuntoUltimo","ColumnasOrigen"]).to_excel(writer, sheet_name="Contactos", index=False)
-
-        if not df_companies.empty:
-            df_companies.to_excel(writer, sheet_name="Empresas", index=False)
-        else:
-            pd.DataFrame(columns=["Empresa","Dominio","ContactosUnicos","TotalEmails","UltimoEnvio"]).to_excel(writer, sheet_name="Empresas", index=False)
-
-        if not df_excluded.empty:
-            df_excluded.to_excel(writer, sheet_name="Excluidos", index=False)
-        else:
-            pd.DataFrame(columns=["Email","Motivo","FilaOrigen","ColumnasOrigen"]).to_excel(writer, sheet_name="Excluidos", index=False)
-    buffer.seek(0)
-    return buffer.getvalue()
+def to_csv_download(df: pd.DataFrame):
+    buf = BytesIO()
+    df.to_csv(buf, index=False, encoding="utf-8")
+    return buf.getvalue()
 
 # ===== Sidebar: parámetros =====
 uploaded = st.file_uploader("Subí tu CSV exportado de Outlook", type=["csv"])
@@ -295,7 +271,7 @@ col3.metric("Seguimiento", int((df_contacts["EstadoCliente"]=="Cliente para segu
 col4.metric("Empresas", df_companies["Empresa"].nunique() if not df_companies.empty else 0)
 col5.metric("Excluidos", len(df_excluded))
 
-# Vistas
+# Tabs
 tab1, tab2, tab3 = st.tabs(["✅ Contactos", "🏢 Empresas", "🚫 Excluidos"])
 with tab1:
     st.dataframe(df_contacts, use_container_width=True)
@@ -304,17 +280,23 @@ with tab2:
 with tab3:
     st.dataframe(df_excluded if not df_excluded.empty else pd.DataFrame(columns=["Email","Motivo","FilaOrigen","ColumnasOrigen"]), use_container_width=True)
 
-# Descargar EXCEL multi-hoja
-excel_bytes = make_excel_bytes(df_contacts, df_companies, df_excluded)
-st.markdown("### Descarga")
-st.download_button(
-    "⬇️ Descargar Excel (Contactos/Empresas/Excluidos).xlsx",
-    data=excel_bytes,
-    file_name="outlook_contactos_procesados.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+# Charts (nativos de Streamlit)
+st.subheader("Distribución Estado Cliente")
+if not df_contacts.empty:
+    st.bar_chart(df_contacts["EstadoCliente"].value_counts())
+
+st.subheader("Top 10 Dominios (por contactos)")
+if not df_contacts.empty:
+    top_domains = df_contacts["Dominio"].value_counts().head(10)
+    st.bar_chart(top_domains)
+
+# Downloads
+st.markdown("### Descargas")
+st.download_button("⬇️ contactos_limpios.csv", data=to_csv_download(df_contacts), file_name="contactos_limpios.csv", mime="text/csv")
+st.download_button("⬇️ empresas_resumen.csv", data=to_csv_download(df_companies), file_name="empresas_resumen.csv", mime="text/csv")
+st.download_button("⬇️ excluidos.csv", data=to_csv_download(df_excluded), file_name="excluidos.csv", mime="text/csv")
 
 st.markdown("""
-**Nota sobre la FECHA si tu CSV no la trae:**
-- En Outlook → Vista Lista → agrega **“Enviado”**/**“Fecha de envío”**, selecciona correos, **Ctrl+C** y pega en Excel; guarda como CSV. Luego volvé a subir aquí y elegí esa columna en el selector.
+**Sugerencias para la FECHA si no sale en tu CSV de Outlook:**
+- En Outlook → Vista Lista → agrega columna **“Enviado”**/**“Fecha de envío”**, selecciona correos, **Ctrl+C** y pegá en Excel; guardá como CSV.
 """)
