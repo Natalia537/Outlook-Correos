@@ -339,17 +339,30 @@ with tab3:
     st.dataframe(df_excluded if not df_excluded.empty else pd.DataFrame(columns=["Email","Motivo","FilaOrigen","ColumnasOrigen"]), use_container_width=True)
 
 # Descargar EXCEL multi-hoja
-excel_bytes = make_excel_bytes(df_contacts, df_companies, df_excluded)
-st.markdown("### Descarga")
-st.download_button(
-    "⬇️ Descargar Excel (Contactos/Empresas/Excluidos).xlsx",
-    data=excel_bytes,
-    file_name="outlook_contactos_procesados.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+def make_excel_bytes(df_contacts: pd.DataFrame, df_companies: pd.DataFrame, df_excluded: pd.DataFrame) -> bytes:
+    from io import BytesIO
+    buffer = BytesIO()
+    # 👇 cambiá el engine a xlsxwriter
+    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+        # Contactos
+        if not df_contacts.empty:
+            cols = ["Email","Nombre","Apellido","Dominio","Empresa","Pais","UltimoEnvio","EstadoCliente","AsuntoUltimo","ColumnasOrigen"]
+            cols = [c for c in cols if c in df_contacts.columns] + [c for c in df_contacts.columns if c not in cols]
+            df_contacts[cols].to_excel(writer, sheet_name="Contactos", index=False)
+        else:
+            pd.DataFrame(columns=["Email","Nombre","Apellido","Dominio","Empresa","Pais","UltimoEnvio","EstadoCliente","AsuntoUltimo","ColumnasOrigen"]).to_excel(writer, sheet_name="Contactos", index=False)
 
-st.markdown("""
-**Notas:**
-- País se infiere solo si el dominio lo sugiere (p. ej., `empresa.com.mx` → **México**, `empresa.cr` → **Costa Rica**).  
-- Si el dominio no tiene TLD de país (p. ej., `.com`, `.net`), se deja **vacío**.
-""")
+        # Empresas
+        if not df_companies.empty:
+            df_companies.to_excel(writer, sheet_name="Empresas", index=False)
+        else:
+            pd.DataFrame(columns=["Empresa","Dominio","Pais","ContactosUnicos","TotalEmails","UltimoEnvio"]).to_excel(writer, sheet_name="Empresas", index=False)
+
+        # Excluidos
+        if not df_excluded.empty:
+            df_excluded.to_excel(writer, sheet_name="Excluidos", index=False)
+        else:
+            pd.DataFrame(columns=["Email","Motivo","FilaOrigen","ColumnasOrigen"]).to_excel(writer, sheet_name="Excluidos", index=False)
+
+    buffer.seek(0)
+    return buffer.getvalue()
