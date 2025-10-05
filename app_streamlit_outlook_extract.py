@@ -342,7 +342,6 @@ with tab3:
 def make_excel_bytes(df_contacts: pd.DataFrame, df_companies: pd.DataFrame, df_excluded: pd.DataFrame) -> bytes:
     from io import BytesIO
     buffer = BytesIO()
-    # 👇 cambiá el engine a xlsxwriter
     with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
         # Contactos
         if not df_contacts.empty:
