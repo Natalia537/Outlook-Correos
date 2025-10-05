@@ -76,7 +76,7 @@ def infer_country_from_domain(domain: str) -> str:
 # ÚNICA función para Excel: usa xlsxwriter
 def make_excel_bytes(df_contacts: pd.DataFrame, df_companies: pd.DataFrame, df_excluded: pd.DataFrame) -> bytes:
     buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="xlsxwriter") as writer:
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         if not df_contacts.empty:
             cols = ["Email","Nombre","Apellido","Dominio","Empresa","Pais","UltimoEnvio","EstadoCliente","AsuntoUltimo","ColumnasOrigen"]
             cols = [c for c in cols if c in df_contacts.columns] + [c for c in df_contacts.columns if c not in cols]
