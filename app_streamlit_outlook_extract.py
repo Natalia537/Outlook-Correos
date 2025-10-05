@@ -5,17 +5,18 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from io import BytesIO
 
-st.set_page_config(page_title="Outlook → Contactos (con filtros de exclusión)", layout="wide")
-st.title("📤 Outlook → 🧰 Contactos Limpios (con filtros de exclusión)")
+st.set_page_config(page_title="Outlook → Contactos (Excel multi-hoja + País por TLD)", layout="wide")
+st.title("📤 Outlook → 🧰 Contactos Limpios (Excel multi-hoja + País por dominio)")
 
 st.markdown("""
-Subí un **CSV** exportado de Outlook (p. ej., *Elementos enviados*). La app:
+Subí un **CSV** exportado de Outlook. La app:
 - Busca correos en **todas** las columnas.
 - Deduplica por email y conserva la **fecha más reciente** (si hay fecha).
 - Infere **Nombre/Apellido** y **Empresa** desde el dominio.
+- **Pais** por TLD del dominio (ej.: `.cr`, `.mx`, `.com.mx`, `.hn`). Si no se puede inferir, queda **vacío**.
 - Clasifica **Cliente reciente** (últimos *N* meses) vs **Seguimiento**.
-- **Excluye** correos no deseados según **reglas configurables** (ventas@, info@, etc.).
-- Descargas: **contactos_limpios**, **empresas_resumen** y **excluidos**.
+- **Excluye** correos no deseados según reglas (ventas@, info@, etc.).
+- Descarga **un solo Excel** con 3 hojas: **Contactos**, **Empresas**, **Excluidos**.
 """)
 
 # ===== Utilidades =====
@@ -46,6 +47,15 @@ DEFAULT_ROLE_PREFIXES = [
     "ventas","sales","info","contact","admin","hr","hello","support",
     "marketing","billing","accounts","compras","noreply","no-reply","noresponder","no-responder"
 ]
+
+# Mapa simple de TLDs a país (agregá los que necesites)
+COUNTRY_MAP = {
+    "ar":"Argentina", "bo":"Bolivia", "br":"Brasil", "cl":"Chile", "co":"Colombia",
+    "cr":"Costa Rica", "do":"República Dominicana", "ec":"Ecuador", "es":"España",
+    "gt":"Guatemala", "hn":"Honduras", "mx":"México", "ni":"Nicaragua", "pa":"Panamá",
+    "pe":"Perú", "py":"Paraguay", "sv":"El Salvador", "uy":"Uruguay", "ve":"Venezuela",
+    "pr":"Puerto Rico"
+}
 
 def parse_date(s):
     if pd.isna(s):
@@ -103,10 +113,51 @@ def harvest_emails_from_row(row: pd.Series):
                 emails.add(em); cols.add(col)
     return emails, cols
 
-def to_csv_download(df: pd.DataFrame):
-    buf = BytesIO()
-    df.to_csv(buf, index=False, encoding="utf-8")
-    return buf.getvalue()
+def infer_country_from_domain(domain: str) -> str:
+    """
+    Intenta inferir el país desde el TLD:
+    - TLD final de 2 letras (p.ej. .cr, .mx, .hn)
+    - o TLD compuesto: *.com.mx → usa 'mx'
+    Si no se puede inferir, devuelve '' (vacío).
+    """
+    if not domain:
+        return ""
+    labels = domain.lower().split(".")
+    if len(labels) < 2:
+        return ""
+    last = labels[-1]
+    # Caso 1: el último label es un ccTLD (2 letras)
+    if len(last) == 2 and last.isalpha():
+        return COUNTRY_MAP.get(last, "")
+    # Caso 2: dominios como *.com.mx → usar el penúltimo si es de 2 letras
+    if len(labels) >= 2:
+        penultimo = labels[-2]
+        if len(penultimo) == 2 and penultimo.isalpha():
+            return COUNTRY_MAP.get(penultimo, "")
+    return ""
+
+def make_excel_bytes(df_contacts: pd.DataFrame, df_companies: pd.DataFrame, df_excluded: pd.DataFrame) -> bytes:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        # Contactos
+        if not df_contacts.empty:
+            cols = ["Email","Nombre","Apellido","Dominio","Empresa","Pais","UltimoEnvio","EstadoCliente","AsuntoUltimo","ColumnasOrigen"]
+            cols = [c for c in cols if c in df_contacts.columns] + [c for c in df_contacts.columns if c not in cols]
+            df_contacts[cols].to_excel(writer, sheet_name="Contactos", index=False)
+        else:
+            pd.DataFrame(columns=["Email","Nombre","Apellido","Dominio","Empresa","Pais","UltimoEnvio","EstadoCliente","AsuntoUltimo","ColumnasOrigen"]).to_excel(writer, sheet_name="Contactos", index=False)
+        # Empresas
+        if not df_companies.empty:
+            df_companies.to_excel(writer, sheet_name="Empresas", index=False)
+        else:
+            pd.DataFrame(columns=["Empresa","Dominio","Pais","ContactosUnicos","TotalEmails","UltimoEnvio"]).to_excel(writer, sheet_name="Empresas", index=False)
+        # Excluidos
+        if not df_excluded.empty:
+            df_excluded.to_excel(writer, sheet_name="Excluidos", index=False)
+        else:
+            pd.DataFrame(columns=["Email","Motivo","FilaOrigen","ColumnasOrigen"]).to_excel(writer, sheet_name="Excluidos", index=False)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 # ===== Sidebar: parámetros =====
 uploaded = st.file_uploader("Subí tu CSV exportado de Outlook", type=["csv"])
@@ -198,6 +249,7 @@ with st.spinner("Procesando…"):
 
             nombre, apellido = infer_name_parts(local)
             empresa = prettify_company_from_domain(domain)
+            pais = infer_country_from_domain(domain)  # <= NUEVO: país desde TLD
             prev = records.get(em)
             if prev is None:
                 records[em] = {
@@ -206,6 +258,7 @@ with st.spinner("Procesando…"):
                     "Apellido": apellido,
                     "Dominio": domain.lower(),
                     "Empresa": empresa,
+                    "Pais": pais,               # <= NUEVO
                     "UltimoEnvio": sent_dt,
                     "AsuntoUltimo": subject
                 }
@@ -218,6 +271,8 @@ with st.spinner("Procesando…"):
                     prev["Nombre"] = nombre
                 if not prev["Apellido"] and apellido:
                     prev["Apellido"] = apellido
+                if not prev.get("Pais") and pais:       # completa País si estaba vacío
+                    prev["Pais"] = pais
                 cols_by_email[em] |= set(cols)
 
     # Contacts DF
@@ -239,13 +294,16 @@ with st.spinner("Procesando…"):
     # Excluidos DF
     df_excluded = pd.DataFrame(excluded_rows)
 
-    # Company rollup (solo contactos válidos)
-    agg = defaultdict(lambda: {"Dominio":"","ContactosUnicos":set(),"TotalEmails":0,"UltimoEnvio":None,"Empresa":""})
+    # Company rollup (solo contactos válidos) — incluimos País si hay mayoría, si no queda vacío
+    agg = defaultdict(lambda: {"Dominio":"","Empresa":"", "Pais":"", "ContactosUnicos":set(),"TotalEmails":0,"UltimoEnvio":None})
     for row in contacts:
         key = (row["Empresa"], row["Dominio"])
         d = agg[key]
         d["Dominio"] = row["Dominio"]
         d["Empresa"] = row["Empresa"]
+        # Para País: el primero que aparezca (en dominios .com se quedará vacío, como pediste)
+        if not d["Pais"] and row.get("Pais"):
+            d["Pais"] = row["Pais"]
         d["TotalEmails"] += 1
         d["ContactosUnicos"].add(row["Email"])
         if row["UltimoEnvio"]:
@@ -257,7 +315,7 @@ with st.spinner("Procesando…"):
     for (empresa, dominio), d in agg.items():
         last_str = d["UltimoEnvio"].strftime("%Y-%m-%d %H:%M:%S") if d["UltimoEnvio"] else ""
         rows_company.append({
-            "Empresa": empresa, "Dominio": dominio,
+            "Empresa": empresa, "Dominio": dominio, "Pais": d["Pais"],
             "ContactosUnicos": len(d["ContactosUnicos"]), "TotalEmails": d["TotalEmails"],
             "UltimoEnvio": last_str
         })
@@ -271,7 +329,7 @@ col3.metric("Seguimiento", int((df_contacts["EstadoCliente"]=="Cliente para segu
 col4.metric("Empresas", df_companies["Empresa"].nunique() if not df_companies.empty else 0)
 col5.metric("Excluidos", len(df_excluded))
 
-# Tabs
+# Vistas
 tab1, tab2, tab3 = st.tabs(["✅ Contactos", "🏢 Empresas", "🚫 Excluidos"])
 with tab1:
     st.dataframe(df_contacts, use_container_width=True)
@@ -280,23 +338,18 @@ with tab2:
 with tab3:
     st.dataframe(df_excluded if not df_excluded.empty else pd.DataFrame(columns=["Email","Motivo","FilaOrigen","ColumnasOrigen"]), use_container_width=True)
 
-# Charts (nativos de Streamlit)
-st.subheader("Distribución Estado Cliente")
-if not df_contacts.empty:
-    st.bar_chart(df_contacts["EstadoCliente"].value_counts())
-
-st.subheader("Top 10 Dominios (por contactos)")
-if not df_contacts.empty:
-    top_domains = df_contacts["Dominio"].value_counts().head(10)
-    st.bar_chart(top_domains)
-
-# Downloads
-st.markdown("### Descargas")
-st.download_button("⬇️ contactos_limpios.csv", data=to_csv_download(df_contacts), file_name="contactos_limpios.csv", mime="text/csv")
-st.download_button("⬇️ empresas_resumen.csv", data=to_csv_download(df_companies), file_name="empresas_resumen.csv", mime="text/csv")
-st.download_button("⬇️ excluidos.csv", data=to_csv_download(df_excluded), file_name="excluidos.csv", mime="text/csv")
+# Descargar EXCEL multi-hoja
+excel_bytes = make_excel_bytes(df_contacts, df_companies, df_excluded)
+st.markdown("### Descarga")
+st.download_button(
+    "⬇️ Descargar Excel (Contactos/Empresas/Excluidos).xlsx",
+    data=excel_bytes,
+    file_name="outlook_contactos_procesados.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
 
 st.markdown("""
-**Sugerencias para la FECHA si no sale en tu CSV de Outlook:**
-- En Outlook → Vista Lista → agrega columna **“Enviado”**/**“Fecha de envío”**, selecciona correos, **Ctrl+C** y pegá en Excel; guardá como CSV.
+**Notas:**
+- País se infiere solo si el dominio lo sugiere (p. ej., `empresa.com.mx` → **México**, `empresa.cr` → **Costa Rica**).  
+- Si el dominio no tiene TLD de país (p. ej., `.com`, `.net`), se deja **vacío**.
 """)
